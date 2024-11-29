@@ -1,5 +1,5 @@
 import warnings
-from typing import Any, ClassVar, Optional, TypeVar, Union
+from typing import Any, ClassVar, Dict, List, Optional, Tuple, Type, TypeVar, Union
 
 import numpy as np
 import torch as th
@@ -20,8 +20,7 @@ class QRDQN(OffPolicyAlgorithm):
     """
     Quantile Regression Deep Q-Network (QR-DQN)
     Paper: https://arxiv.org/abs/1710.10044
-    Default hyperparameters are taken from the paper and are tuned for Atari games
-    (except for the ``learning_starts`` parameter).
+    Default hyperparameters are taken from the paper and are tuned for Atari games.
 
     :param policy: The policy model to use (MlpPolicy, CnnPolicy, ...)
     :param env: The environment to learn from (if registered in Gym, can be str)
@@ -61,7 +60,7 @@ class QRDQN(OffPolicyAlgorithm):
     :param _init_setup_model: Whether or not to build the network at the creation of the instance
     """
 
-    policy_aliases: ClassVar[dict[str, type[BasePolicy]]] = {
+    policy_aliases: ClassVar[Dict[str, Type[BasePolicy]]] = {
         "MlpPolicy": MlpPolicy,
         "CnnPolicy": CnnPolicy,
         "MultiInputPolicy": MultiInputPolicy,
@@ -74,18 +73,18 @@ class QRDQN(OffPolicyAlgorithm):
 
     def __init__(
         self,
-        policy: Union[str, type[QRDQNPolicy]],
+        policy: Union[str, Type[QRDQNPolicy]],
         env: Union[GymEnv, str],
         learning_rate: Union[float, Schedule] = 5e-5,
         buffer_size: int = 1000000,  # 1e6
-        learning_starts: int = 100,
+        learning_starts: int = 50000,
         batch_size: int = 32,
         tau: float = 1.0,
         gamma: float = 0.99,
-        train_freq: Union[int, tuple[int, str]] = 4,
+        train_freq: int = 4,
         gradient_steps: int = 1,
-        replay_buffer_class: Optional[type[ReplayBuffer]] = None,
-        replay_buffer_kwargs: Optional[dict[str, Any]] = None,
+        replay_buffer_class: Optional[Type[ReplayBuffer]] = None,
+        replay_buffer_kwargs: Optional[Dict[str, Any]] = None,
         optimize_memory_usage: bool = False,
         target_update_interval: int = 10000,
         exploration_fraction: float = 0.005,
@@ -94,7 +93,7 @@ class QRDQN(OffPolicyAlgorithm):
         max_grad_norm: Optional[float] = None,
         stats_window_size: int = 100,
         tensorboard_log: Optional[str] = None,
-        policy_kwargs: Optional[dict[str, Any]] = None,
+        policy_kwargs: Optional[Dict[str, Any]] = None,
         verbose: int = 0,
         seed: Optional[int] = None,
         device: Union[th.device, str] = "auto",
@@ -153,7 +152,8 @@ class QRDQN(OffPolicyAlgorithm):
         self.exploration_schedule = get_linear_fn(
             self.exploration_initial_eps, self.exploration_final_eps, self.exploration_fraction
         )
-
+        # Account for multiple environments
+        # each call to step() corresponds to n_envs transitions
         if self.n_envs > 1:
             if self.n_envs > self.target_update_interval:
                 warnings.warn(
@@ -162,6 +162,8 @@ class QRDQN(OffPolicyAlgorithm):
                     "therefore the target network will be updated after each call to env.step() "
                     f"which corresponds to {self.n_envs} steps."
                 )
+
+            self.target_update_interval = max(self.target_update_interval // self.n_envs, 1)
 
     def _create_aliases(self) -> None:
         self.quantile_net = self.policy.quantile_net
@@ -174,9 +176,7 @@ class QRDQN(OffPolicyAlgorithm):
         This method is called in ``collect_rollouts()`` after each step in the environment.
         """
         self._n_calls += 1
-        # Account for multiple environments
-        # each call to step() corresponds to n_envs transitions
-        if self._n_calls % max(self.target_update_interval // self.n_envs, 1) == 0:
+        if self._n_calls % self.target_update_interval == 0:
             polyak_update(self.quantile_net.parameters(), self.quantile_net_target.parameters(), self.tau)
             # Copy running stats, see https://github.com/DLR-RM/stable-baselines3/issues/996
             polyak_update(self.batch_norm_stats, self.batch_norm_stats_target, 1.0)
@@ -235,11 +235,11 @@ class QRDQN(OffPolicyAlgorithm):
 
     def predict(
         self,
-        observation: Union[np.ndarray, dict[str, np.ndarray]],
-        state: Optional[tuple[np.ndarray, ...]] = None,
+        observation: Union[np.ndarray, Dict[str, np.ndarray]],
+        state: Optional[Tuple[np.ndarray, ...]] = None,
         episode_start: Optional[np.ndarray] = None,
         deterministic: bool = False,
-    ) -> tuple[np.ndarray, Optional[tuple[np.ndarray, ...]]]:
+    ) -> Tuple[np.ndarray, Optional[Tuple[np.ndarray, ...]]]:
         """
         Get the policy action from an observation (and optional hidden state).
         Includes sugar-coating to handle different observations (e.g. normalizing images).
@@ -284,10 +284,10 @@ class QRDQN(OffPolicyAlgorithm):
             progress_bar=progress_bar,
         )
 
-    def _excluded_save_params(self) -> list[str]:
+    def _excluded_save_params(self) -> List[str]:
         return super()._excluded_save_params() + ["quantile_net", "quantile_net_target"]  # noqa: RUF005
 
-    def _get_torch_save_params(self) -> tuple[list[str], list[str]]:
+    def _get_torch_save_params(self) -> Tuple[List[str], List[str]]:
         state_dicts = ["policy", "policy.optimizer"]
 
         return state_dicts, []
